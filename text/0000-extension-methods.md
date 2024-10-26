@@ -21,13 +21,13 @@ Currently, if you want to add a `.method()` to a type you don't control, you hav
 - Can only operate generically: because the method is delivered via a trait, _anyone_ can implement it for their own types. While this is (usually) not a direct problem, it's clearly not consistent with the intent of the developer, who (usually) only want this method to be attached to a single type.
 - Alternatively, they require using the sealed trait pattern, which is _even more boilerplate_ to implement what should be a straightforward "method on an external type"
 
-This RFC proposes a new syntax for \*\*extension methods
+This RFC proposes a new syntax for **extension methods**, which make it easier and more reliable to add suffix methods to types you don't control.
 
 # Guide-level explanation
 
 [guide-level-explanation]: #guide-level-explanation
 
-Extension methods are a syntax feature in rust that allow you to add methods to third-party types. They look very similar to regular free functions, but they include a `self` parameter, which makes them callable as methods on the indicated type. They look like this:
+Extension methods are a syntax feature in rust that allow you to add methods to third-party types. They use a syntax similar to `impl` blocks:
 
 ```rust
 mod submodule {
@@ -38,7 +38,7 @@ mod submodule {
     }
 
     fn foo(vec: &Vec<i32>) {
-        if vec.is_full() {
+        if vec.is_not_empty() {
 
         }
     }
@@ -53,22 +53,33 @@ fn foo(vec: &Vec<i32>) {
 }
 ```
 
-In most ways, this method acts like a regular function: it has a free standing definition (outside an `impl` block, has its own visibility, etc). It can be called as a free function without issue: `is_not_empty(&vec)`. However, because of the `self` parameter, it also has the property that it can be called as a `.method()` on types matching its `self` type.
+Once an extension method is written, it behaves in most ways like an inherent method on the type. It can be called both as a method (`.is_not_empty()`) and as an associated function (`Vec::is_not_empty`).
 
 Extension methods are subject to the following rules:
 
-- Extension methods are scoped; they must be imported in order to be used (sort of like traits and trait methods).
-- Extension methods have the _highest_ priority, above even the inherent methods defined in `impl Type { ... }`. This ensures that code using extension methods doesn't break if the type or one of its traits gains a method of the same name. Extension methods collide with each other in the same way that trait methods do.
-- Extension methods _cannot_ be defined / called on types in the same crate. `impl` blocks should still be the primary way that methods are added to your own types. It will be an error to call a generic extension
-- Extension methods cannot be exported from a crate, as they are primarily intended to be small-scope aid to help developers write more readable code involving types they don't control. Exportable extension methods would seem to violate the spirit, if not the word, of the orphan rule. Crates that want to add functionality to existing types
-- It _is_ acceptable to implement a set of extension methods on non-overlapping with the same name:
+- Extension methods are scoped; they must be imported in order to be used (sort of like traits and trait methods). An `impl extend` block has its own import scope, so you can both import specific methods from the block (`use module::Vec::is_not_empty`) or the entire block (`use module::Vec`, which brings methods into scope similar to a trait import).
+- Extension methods have the _highest_ priority, above even the inherent methods defined in `impl Type { ... }`. This ensures that code using extension methods doesn't break if the type or one of its traits gains a method of the same name. Extension methods collide with each other in the same way that trait methods do; it's a compile error to call an extension method if more than one candidate of the same name is in scope.
+- Extension methods can be defined / called on types in the same crate, but doing so is discouraged (and there should be a clippy alert preventing it in non-generic cases). Regular `impl` blocks should still be the primary way that methods are added to your own types.
+- Extension methods cannot be exported from a crate, as they are primarily intended to be small-scope aid to help developers write more readable code involving types they don't control. Exportable extension methods would seem to violate the spirit, if not the word, of the orphan rule. Crates that want to export additional functionality on external types should continue to do so with traits.
+
+It's also possible to create an "alias" for an `impl extern` block:
 
 ```rust
-pub fn is_not_empty<T>(self: [T]) -> bool {self.len() > 0}
-pub fn is_not_empty<K, V>(self: &HashMap<K, V>) -> bool {self.len() > 0}
+impl<T> extern [T] as SliceExt {
+    pub fn is_not_empty(&self) -> bool {
+        self.len() > 0
+    }
+}
+
+impl<T> extern T as DropExt {
+    pub fn drop(self) { let _ = self }
+}
 ```
 
-In this case, the method is treated like a function with a generic `self` parameter, sort of like the developer had written `fn is_not_empty(self: impl OPAQUE_TRAIT)`
+There are generally two reasons you'd do this:
+
+- If you're adding extension methods to an un-nameable type, such as a slice, tuple, or generic `T`, the alias allows those methods to be imported (`use module::SliceExt`)
+- If you still want to disambiguate an extension method call from an identically named inherent method.
 
 Extension methods are first and foremost a tool for _developer convenience_; they exist because you _want_ to call some kind of `.method()` on a third party type, but don't want to go through all the hassle of making an entire extension trait about it. Because they take priority in method resolution, you can use them confidently, without fear that future changes to the type will conflict with your method, and because they're scoped, the method only exists where you want it to.
 
@@ -207,14 +218,33 @@ Additionally, this proposal contains novel item import behaviors. While I believ
 
 [rationale-and-alternatives]: #rationale-and-alternatives
 
+## General rationale
+
 - The most important part of this design is the way that extension methods have the highest priority in method name resolution; a lot of the unusual parts of the proposal are oriented around this requirement.
 - Because the method takes the highest priority, it's important that the method not be "infectious" in places it isn't expected. Even even we contrain its use to a single crate, it would still be very surprising for a type to have an unexpected method available to it without _any_ indication in the relevant `use` items of the call site. Rust has a strong principle of requiring used items to be imported (be they types with inherent methods, or traits that bring in new methods), and I wanted to make sure that principle was upheld here.
 - The requirement that extension traits be importable is the main reason I made them "free-standing", rather than part of a hypothetical `impl extern` block.
+
+## Specific feature decisions
+
+### Extension methods on local types
+
+### Block names and aliasing
+
+### Disallowed export
+
+- Originally, it was outright disallowed to add extension methods to types in the same crate. The idea was that we didn't want to allow multiple ways to add methods to types. There were two main reasons to allow extension methods to inherent types:
+  - It's already possible to add methods to types both inherently and with traits, and generally this isn't a problem.
+  - One
+- Block names
 
 - Why is this design the best in the space of possible designs?
 - What other designs have been considered and what is the rationale for not choosing them?
 - What is the impact of not doing this?
 - If this is a language proposal, could this be done in a library or macro instead? Does the proposed change make Rust code easier or harder to read, understand, and maintain?
+
+### Alternatives
+
+### Not
 
 # Prior art
 
